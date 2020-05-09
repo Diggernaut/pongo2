@@ -2,9 +2,8 @@ package pongo2
 
 import (
 	"bytes"
+	"fmt"
 	"io"
-
-	"github.com/juju/errors"
 )
 
 type TemplateWriter interface {
@@ -88,42 +87,10 @@ func newTemplate(set *TemplateSet, name string, isTplString bool, tpl []byte) (*
 }
 
 func (tpl *Template) execute(context Context, writer TemplateWriter) error {
-	// Determine the parent to be executed (for template inheritance)
-	parent := tpl
-	for parent.parent != nil {
-		parent = parent.parent
+	parent, ctx, err := tpl.newContextForExecution(context)
+	if err != nil {
+		return err
 	}
-
-	// Create context if none is given
-	newContext := make(Context)
-	newContext.Update(tpl.set.Globals)
-
-	if context != nil {
-		newContext.Update(context)
-
-		if len(newContext) > 0 {
-			// Check for context name syntax
-			err := newContext.checkForValidIdentifiers()
-			if err != nil {
-				return err
-			}
-
-			// Check for clashes with macro names
-			for k := range newContext {
-				_, has := tpl.exportedMacros[k]
-				if has {
-					return &Error{
-						Filename:  tpl.name,
-						Sender:    "execution",
-						OrigError: errors.Errorf("context key name '%s' clashes with macro '%s'", k, k),
-					}
-				}
-			}
-		}
-	}
-
-	// Create operational context
-	ctx := newExecutionContext(parent, newContext)
 
 	// Run the selected document
 	if err := parent.root.Execute(ctx, writer); err != nil {
@@ -160,6 +127,85 @@ func (tpl *Template) ExecuteWriter(context Context, writer io.Writer) error {
 		return err
 	}
 	return nil
+}
+func (tpl *Template) newContextForExecution(context Context) (*Template, *ExecutionContext, error) {
+	// Determine the parent to be executed (for template inheritance)
+	parent := tpl
+	for parent.parent != nil {
+		parent = parent.parent
+	}
+
+	// Create context if none is given
+	newContext := make(Context)
+	newContext.Update(tpl.set.Globals)
+
+	if context != nil {
+		newContext.Update(context)
+
+		if len(newContext) > 0 {
+			// Check for context name syntax
+			err := newContext.checkForValidIdentifiers()
+			if err != nil {
+				return parent, nil, err
+			}
+
+			// Check for clashes with macro names
+			for k := range newContext {
+				_, has := tpl.exportedMacros[k]
+				if has {
+					return parent, nil, &Error{
+						Filename: tpl.name,
+						Sender:   "execution",
+						//ErrorMsg: fmt.Sprintf("Context key name '%s' clashes with macro '%s'.", k, k),
+					}
+				}
+			}
+		}
+	}
+
+	// Create operational context
+	ctx := newExecutionContext(parent, newContext)
+
+	return parent, ctx, nil
+}
+func (tpl *Template) ExecuteBlocks(context Context, blocks []string) (map[string]string, error) {
+	result := make(map[string]string)
+	_, ctx, err := tpl.newContextForExecution(context)
+	if err != nil {
+		return nil, err
+	}
+	buffer := bytes.NewBuffer(make([]byte, 0, int(float64(tpl.size)*1.3)))
+
+	for i := 0; i < len(blocks); i++ {
+		block := blocks[i]
+		blockTag := tagBlockNode{name: block}
+
+		err := blockTag.Execute(ctx, buffer)
+		if err != nil {
+			return nil, err
+		}
+		result[block] = buffer.String()
+		buffer.Reset()
+	}
+	return result, nil
+}
+func (tpl *Template) ExecuteBlock(context Context, block string) (string, error) {
+	result := ""
+	_, ctx, err := tpl.newContextForExecution(context)
+	if err != nil {
+		return "", err
+	}
+	buffer := bytes.NewBuffer(make([]byte, 0, int(float64(tpl.size)*1.3)))
+	blockTag := tagBlockNode{name: block}
+	var er *Error
+	er = blockTag.Execute(ctx, buffer)
+	if er != nil {
+		fmt.Println(err)
+	}
+	result = buffer.String()
+	buffer.Reset()
+
+	return result, nil
 }
 
 // Same as ExecuteWriter. The only difference between both functions is that
